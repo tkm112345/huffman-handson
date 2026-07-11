@@ -1,4 +1,4 @@
-# huffman-handson
+# handson-huffman
 
 Go でハフマン符号（Huffman coding）を一から実装して、可逆圧縮の仕組みを体験するハンズオン用のリポジトリです。
 実際のファイルを読み込んで圧縮・復元し、圧縮率を確認できます。
