@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/gob"
 	"fmt"
 	"os"
 	"sort"
@@ -9,79 +10,98 @@ import (
 
 // Node はハフマン木の1つの節を表す
 type Node struct {
-	char rune // 文字(葉のときだけ意味を持つ)
-	freq int  // 文字の出現頻度
-	left *Node  // 左の子ノード
-	right *Node // 右の子ノード
+	char  rune
+	freq  int
+	left  *Node
+	right *Node
 }
 
-// isLeafは葉かどうかを判定
 func (n *Node) isLeaf() bool {
 	return n.left == nil && n.right == nil
 }
 
-// buildCodes木を再帰的にたどり，各文字の符号をcodeに書き込む
-func buildCodes(node *Node, path string, codes map[rune]string){
+// buildTree は頻度表から「いつも同じ」ハフマン木を組み立てる。
+// 圧縮側と展開側で必ず同じ木になるよう、文字順にそろえて安定ソートを使う。
+func buildTree(freq map[rune]int) *Node {
+	// 文字を昇順に並べてから葉を作る（順番を決定的にする）
+	var chars []rune
+	for ch := range freq {
+		chars = append(chars, ch)
+	}
+	sort.Slice(chars, func(i, j int) bool { return chars[i] < chars[j] })
+
+	var nodes []*Node
+	for _, ch := range chars {
+		nodes = append(nodes, &Node{char: ch, freq: freq[ch]})
+	}
+
+	// 1番小さい2つを合体、を繰り返す
+	for len(nodes) > 1 {
+		sort.SliceStable(nodes, func(i, j int) bool {
+			return nodes[i].freq < nodes[j].freq
+		})
+		left := nodes[0]
+		right := nodes[1]
+		parent := &Node{freq: left.freq + right.freq, left: left, right: right}
+		nodes = append(nodes[2:], parent)
+	}
+	return nodes[0]
+}
+
+func buildCodes(node *Node, path string, codes map[rune]string) {
 	if node == nil {
 		return
 	}
-	// 葉ならここまでの道pathがこの文字の符号
 	if node.isLeaf() {
 		codes[node.char] = path
 		return
 	}
-	// 葉でなければ左に0,右に1を足して子へ潜っていく
 	buildCodes(node.left, path+"0", codes)
 	buildCodes(node.right, path+"1", codes)
 }
 
-// encode: 文字列を符号表でビット列に変換
 func encode(text string, codes map[rune]string) string {
 	var sb strings.Builder
 	for _, ch := range text {
-		sb.WriteString(codes[ch]) // 1文字ずつ符号に置き換えて連結
+		sb.WriteString(codes[ch])
 	}
 	return sb.String()
 }
 
-// decode: ビット列で木をたどって文字列に戻す
 func decode(bits string, root *Node) string {
 	var sb strings.Builder
-	node := root // 現在地を根に置く
+	node := root
 	for _, bit := range bits {
 		if bit == '0' {
-			node = node.left // 0なら左へ降りる
+			node = node.left
 		} else {
-			node = node.right // 1なら右へ降りる
+			node = node.right
 		}
 		if node.isLeaf() {
-			sb.WriteRune(node.char) // 葉に着いたら文字を出力
-			node = root // 根に戻る
+			sb.WriteRune(node.char)
+			node = root
 		}
 	}
 	return sb.String()
 }
 
-// packBits: "0101..."のビット列を、8ビットずつ本物のバイトに詰める。
-// 端数は0で埋め、埋めた個数(padding)も返す。
 func packBits(bits string) ([]byte, int) {
 	padding := (8 - len(bits)%8) % 8
-	bits = bits + strings.Repeat("0", padding) // 端数を0で埋める
+	bits = bits + strings.Repeat("0", padding)
 	out := make([]byte, len(bits)/8)
 	for i := 0; i < len(bits); i++ {
 		if bits[i] == '1' {
-			out[i/8] |= 1 << (7 - i%8) // i番目のビットを該当バイトの該当位置に立てる
+			out[i/8] |= 1 << (7 - i%8)
 		}
 	}
 	return out, padding
 }
 
-// unpackBits: バイト列を"0101..."のビット列に戻し、末尾のpadding分を捨てる。
 func unpackBits(data []byte, padding int) string {
 	var sb strings.Builder
 	for _, b := range data {
 		for i := 7; i >= 0; i-- {
-			if b&(1<<i) !=0 {
+			if b&(1<<i) != 0 {
 				sb.WriteByte('1')
 			} else {
 				sb.WriteByte('0')
@@ -89,94 +109,86 @@ func unpackBits(data []byte, padding int) string {
 		}
 	}
 	s := sb.String()
-	return s[:len(s) - padding] // 末尾のpadding分を捨てる
+	return s[:len(s)-padding]
 }
 
-func main() {
-	// コマンドライン引数で渡されたファイルを読み込む
-	data, err := os.ReadFile(os.Args[1])
-	if err != nil {
-		panic(err) // 読み込み失敗時はエラーで止める
-	}
-	text := string(data) // バイト列を文字列として扱う
+// Archive は圧縮ファイルに保存する中身。木を作り直すための頻度表も一緒に持つ。
+type Archive struct {
+	Freq    map[rune]int
+	Padding int
+	Data    []byte
+}
 
-	// 文字ごとの出現回数を数える
+// compress はテキストをハフマン圧縮して path に書き出す
+func compress(text, path string) error {
 	freq := make(map[rune]int)
 	for _, ch := range text {
 		freq[ch]++
 	}
+	root := buildTree(freq)
 
-	// 下記文字を「葉ノード」にして札の山を作る
-	var nodes []*Node
-	for ch, count := range freq {
-		nodes = append(nodes, &Node{char: ch, freq: count})
-	}
-
-	// 札が1枚に成るまで「1番小さい2つを合体」を繰り返す
-	for len(nodes) > 1 {
-		// 頻度の小さい順に並び替える
-		sort.Slice(nodes, func(i,j int) bool {
-			return nodes[i].freq < nodes[j].freq
-		})
-
-		// 先頭2つを取り出す
-		left := nodes[0]
-		right := nodes[1]
-
-		// 2つを合体させて新しいノードを作る
-		parent := &Node{
-			freq: left.freq + right.freq,
-			left: left,
-			right: right,
-		}
-
-		// 使った2枚を山から除き，親を山に戻す
-		nodes = append(nodes[2:], parent)
-
-		// fmt.Printf("合体: freq %d + freq %d => freq %d （残り %d枚）\n",
-		// 	left.freq, right.freq, parent.freq, len(nodes))
-	}
-
-	// 最後に残った1枚が根
-	root := nodes[0]
-
-	// 木をたどって符号表を作る
 	codes := make(map[rune]string)
 	buildCodes(root, "", codes)
 
-	// 符号表を表示
-	// fmt.Println("符号表:")
-	// for ch, code :=  range codes {
-	// 	fmt.Printf("%q → %s （%dビット）\n", ch, code, len(code))
-	// }
-
-	// 符号化
 	encoded := encode(text, codes)
-
-	// ★ビットを本物のバイトに詰めてファイルに書き出す
 	packed, padding := packBits(encoded)
-	if err := os.WriteFile("sample.huff", packed, 0644); err != nil {
-		panic(err)
+
+	arc := Archive{Freq: freq, Padding: padding, Data: packed}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return gob.NewEncoder(f).Encode(arc) // 頻度表・パディング・データをまとめて保存
+}
+
+// decompress は圧縮ファイル path を読み、元の文字列に復元する
+func decompress(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	var arc Archive
+	if err := gob.NewDecoder(f).Decode(&arc); err != nil {
+		return "", err
 	}
 
-	// ★書き出したファイルを読み戻して復号する（本当にファイル往復させる）
-	raw, err := os.ReadFile("sample.huff")
+	root := buildTree(arc.Freq) // 保存された頻度表から木を作り直す
+	bits := unpackBits(arc.Data, arc.Padding)
+	return decode(bits, root), nil
+}
+
+func main() {
+	inPath := os.Args[1]
+	outPath := inPath + ".huff"
+
+	data, err := os.ReadFile(inPath)
 	if err != nil {
 		panic(err)
 	}
-	bits := unpackBits(raw, padding)
-	decoded := decode(bits, root)
+	text := string(data)
 
-	// 検算
+	// 圧縮
+	if err := compress(text, outPath); err != nil {
+		panic(err)
+	}
+
+	// 圧縮ファイル「単体」から復元
+	decoded, err := decompress(outPath)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("入力ファイル  : %s\n", inPath)
+	fmt.Printf("圧縮ファイル  : %s\n", outPath)
 	fmt.Printf("復号は正しい? : %v\n", text == decoded)
 
-	// ファイルサイズ比較（実バイト）
-	originalBytes := len(data)
-	compressedBytes := len(packed)
-	fmt.Println("--- 圧縮効果（実バイト）---")
-	fmt.Printf("元ファイル   : %d バイト\n", originalBytes)
-	fmt.Printf("圧縮ファイル : %d バイト（別途、木の情報が必要）\n", compressedBytes)
-	fmt.Printf("削減率       : %.1f%%\n",
-			100*(1-float64(compressedBytes)/float64(originalBytes)))
-
+	info, _ := os.Stat(outPath)
+	fmt.Println("--- 圧縮効果（実バイト・木込み）---")
+	fmt.Printf("元ファイル    : %d バイト\n", len(data))
+	fmt.Printf("圧縮ファイル  : %d バイト（木の情報を含む）\n", info.Size())
+	fmt.Printf("削減率        : %.1f%%\n",
+		100*(1-float64(info.Size())/float64(len(data))))
 }
