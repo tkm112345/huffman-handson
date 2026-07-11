@@ -3,6 +3,10 @@
 *.exe
 *.out
 
+# 生成される圧縮ファイル・テスト用データ
+*.huff
+big.txt
+
 # Editor
 .vscode/
 .idea/
