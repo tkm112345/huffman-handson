@@ -1,0 +1,8 @@
+# Go build artifacts
+/huffman
+*.exe
+*.out
+
+# Editor
+.vscode/
+.idea/
