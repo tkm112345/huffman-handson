@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 )
@@ -62,7 +63,12 @@ func decode(bits string, root *Node) string {
 }
 
 func main() {
-	text := "abcdefgh"
+	// コマンドライン引数で渡されたファイルを読み込む
+	data, err := os.ReadFile(os.Args[1])
+	if err != nil {
+		panic(err) // 読み込み失敗時はエラーで止める
+	}
+	text := string(data) // バイト列を文字列として扱う
 
 	// 文字ごとの出現回数を数える
 	freq := make(map[rune]int)
