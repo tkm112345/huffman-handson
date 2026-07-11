@@ -62,6 +62,36 @@ func decode(bits string, root *Node) string {
 	return sb.String()
 }
 
+// packBits: "0101..."のビット列を、8ビットずつ本物のバイトに詰める。
+// 端数は0で埋め、埋めた個数(padding)も返す。
+func packBits(bits string) ([]byte, int) {
+	padding := (8 - len(bits)%8) % 8
+	bits = bits + strings.Repeat("0", padding) // 端数を0で埋める
+	out := make([]byte, len(bits)/8)
+	for i := 0; i < len(bits); i++ {
+		if bits[i] == '1' {
+			out[i/8] |= 1 << (7 - i%8) // i番目のビットを該当バイトの該当位置に立てる
+		}
+	}
+	return out, padding
+}
+
+// unpackBits: バイト列を"0101..."のビット列に戻し、末尾のpadding分を捨てる。
+func unpackBits(data []byte, padding int) string {
+	var sb strings.Builder
+	for _, b := range data {
+		for i := 7; i >= 0; i-- {
+			if b&(1<<i) !=0 {
+				sb.WriteByte('1')
+			} else {
+				sb.WriteByte('0')
+			}
+		}
+	}
+	s := sb.String()
+	return s[:len(s) - padding] // 末尾のpadding分を捨てる
+}
+
 func main() {
 	// コマンドライン引数で渡されたファイルを読み込む
 	data, err := os.ReadFile(os.Args[1])
@@ -123,24 +153,30 @@ func main() {
 	// 符号化
 	encoded := encode(text, codes)
 
-	// 復号
-	decoded := decode(encoded, root)
+	// ★ビットを本物のバイトに詰めてファイルに書き出す
+	packed, padding := packBits(encoded)
+	if err := os.WriteFile("sample.huff", packed, 0644); err != nil {
+		panic(err)
+	}
 
-	// 結果を表示
-	fmt.Printf("元の文字列   : %s\n", text)
-	fmt.Printf("符号化後     : %s\n", encoded)
-	fmt.Printf("復号後       : %s\n", decoded)
+	// ★書き出したファイルを読み戻して復号する（本当にファイル往復させる）
+	raw, err := os.ReadFile("sample.huff")
+	if err != nil {
+		panic(err)
+	}
+	bits := unpackBits(raw, padding)
+	decoded := decode(bits, root)
+
+	// 検算
 	fmt.Printf("復号は正しい? : %v\n", text == decoded)
 
-	// --- 圧縮率を計算 ---
-	originalBits := len(text) * 8 // ASCII: 1文字8ビット
-	compressedBits := len(encoded)
-	fmt.Println("--- 圧縮効果 ---")
-	fmt.Printf("ASCII        : %dビット\n", originalBits)
-	fmt.Printf("ハフマン     : %dビット\n", compressedBits)
+	// ファイルサイズ比較（実バイト）
+	originalBytes := len(data)
+	compressedBytes := len(packed)
+	fmt.Println("--- 圧縮効果（実バイト）---")
+	fmt.Printf("元ファイル   : %d バイト\n", originalBytes)
+	fmt.Printf("圧縮ファイル : %d バイト（別途、木の情報が必要）\n", compressedBytes)
 	fmt.Printf("削減率       : %.1f%%\n",
-			100*(1-float64(compressedBits)/float64(originalBits)))
-
-
+			100*(1-float64(compressedBytes)/float64(originalBytes)))
 
 }
